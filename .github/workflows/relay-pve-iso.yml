@@ -1,0 +1,63 @@
+name: Relay Proxmox VE ISO
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Download official Proxmox VE ISO
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ISO='proxmox-ve_9.2-1.iso'
+          URL='https://enterprise.proxmox.com/iso/proxmox-ve_9.2-1.iso'
+          curl -fL --retry 5 --retry-delay 5 -o "$ISO" "$URL"
+          ls -lh "$ISO"
+
+      - name: Verify official SHA256
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo '4e88fe416df9b527624a175f24c9aa07c714d3332afb1ee3dbf3879573ef2c6c  proxmox-ve_9.2-1.iso' | sha256sum -c -
+
+      - name: Create or reuse release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TAG='pve-9.2-1'
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title 'Proxmox VE 9.2-1 ISO Relay' \
+              --notes 'Official Proxmox VE 9.2-1 x86-64 ISO relayed for lab/POC use. SHA256 verified against the published checksum.'
+          fi
+
+      - name: Upload ISO as release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          gh release upload 'pve-9.2-1' 'proxmox-ve_9.2-1.iso' \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+      - name: Verify release asset metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          gh release view 'pve-9.2-1' \
+            --repo "$GITHUB_REPOSITORY" \
+            --json tagName,assets \
+            --jq '{tag:.tagName,assets:[.assets[]|{name,size,state,digest}]}'
