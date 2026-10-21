@@ -1,0 +1,104 @@
+name: Relay OpenSearch repository-s3 3.9.0
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/relay-opensearch-s3.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: relay-opensearch-repository-s3-3.9.0
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    if: github.repository == 'dungpq3/pve-iso-relay'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PLUGIN_NAME: repository-s3
+      PLUGIN_VERSION: '3.9.0'
+      ZIP_NAME: repository-s3-3.9.0.zip
+      OFFICIAL_URL: https://artifacts.opensearch.org/releases/plugins/repository-s3/3.9.0/repository-s3-3.9.0.zip
+      RELEASE_TAG: opensearch-repository-s3-3.9.0
+
+    steps:
+      - name: Download from official OpenSearch distribution
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$RUNNER_TEMP"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --silent --show-error \
+            --retry 4 --retry-delay 4 --retry-connrefused \
+            --connect-timeout 15 --max-time 300 \
+            --output "$ZIP_NAME" "$OFFICIAL_URL"
+          test -s "$ZIP_NAME"
+          echo "DOWNLOAD=PASS|SOURCE=OFFICIAL_OPENSEARCH"
+
+      - name: Verify ZIP integrity and exact plugin compatibility
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$RUNNER_TEMP"
+          python3 - "$ZIP_NAME" <<'PY'
+          import pathlib, sys, zipfile
+          from pathlib import PurePosixPath
+
+          path = pathlib.Path(sys.argv[1])
+          assert 1_000_000 < path.stat().st_size < 200_000_000, "ZIP_SIZE"
+          with zipfile.ZipFile(path) as z:
+              assert z.testzip() is None, "ZIP_CRC"
+              for member in z.namelist():
+                  p = PurePosixPath(member)
+                  assert not p.is_absolute() and ".." not in p.parts, "UNSAFE_PATH"
+              assert z.namelist().count("plugin-descriptor.properties") == 1, "DESCRIPTOR"
+              raw = z.read("plugin-descriptor.properties").decode("utf-8")
+          properties = {}
+          for line in raw.splitlines():
+              if "=" in line and not line.startswith("#"):
+                  key, value = line.split("=", 1)
+                  properties[key.strip()] = value.strip()
+          assert properties.get("name") == "repository-s3", "PLUGIN_NAME"
+          assert properties.get("version") == "3.9.0", "PLUGIN_VERSION"
+          assert properties.get("opensearch.version") == "3.9.0", "OPENSEARCH_VERSION"
+          print("PLUGIN_GATE=PASS|repository-s3|version=3.9.0|zip_crc=PASS")
+          PY
+          sha256sum "$ZIP_NAME" > "$ZIP_NAME.sha256"
+          {
+            echo "SOURCE_URL=$OFFICIAL_URL"
+            echo "PLUGIN_NAME=$PLUGIN_NAME"
+            echo "PLUGIN_VERSION=$PLUGIN_VERSION"
+            echo "SOURCE_TRANSPORT=HTTPS"
+            echo "SOURCE_SIGNATURE_VERIFIED=NO"
+            echo "SHA256=$(sha256sum "$ZIP_NAME" | cut -d' ' -f1)"
+            echo "BYTES=$(stat -c '%s' "$ZIP_NAME")"
+          } > SOURCE.txt
+          cat "$ZIP_NAME.sha256"
+          echo "CHECKSUM_GATE=PASS|SHA256_RECORDED"
+
+      - name: Publish immutable GitHub Release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          cd "$RUNNER_TEMP"
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release already exists. Refusing to overwrite immutable artifact."
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" \
+            "$ZIP_NAME" "$ZIP_NAME.sha256" SOURCE.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "OpenSearch repository-s3 3.9.0 official ZIP relay" \
+            --notes "Unmodified download from official OpenSearch distribution URL. ZIP CRC and exact plugin descriptor verified. SHA256 is computed by this workflow for transport integrity, not an independent upstream signature."
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,url,assets \
+            --jq '{tag:.tagName,url:.url,assets:[.assets[]|{name,size,state,digest}]}'
+          echo "RESULT=PASS_GITHUB_RELEASE_READY"
