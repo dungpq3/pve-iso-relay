@@ -1,0 +1,122 @@
+name: Relay Qwen Code standalone v0.28.4
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: iif-qwen-code-standalone-v0.28.4
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    if: github.repository == 'dungpq3/pve-iso-relay' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      UPSTREAM_TAG: v0.28.4
+      ASSET: qwen-code-linux-x64.tar.gz
+      ASSET_SHA256: 15d471ca7f08eed7898ec9c3dcf2e66dc8c29b61a943d0daece6cb19f48da3e7
+      SUMS_SHA256: d61bfeec2a5f0c8270b4aa520f44186026981f7809a035aa8592b50cbc6f7902
+      RELAY_TAG: iif-qwen-code-v0.28.4
+
+    steps:
+      - name: Verify pinned upstream release downloads
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$RUNNER_TEMP"
+          BASE="https://github.com/QwenLM/qwen-code/releases/download/$UPSTREAM_TAG"
+          for file in "$ASSET" SHA256SUMS; do
+            curl --fail --location --silent --show-error \
+              --proto '=https' --proto-redir '=https' --tlsv1.2 \
+              --retry 4 --retry-delay 3 --retry-connrefused \
+              --connect-timeout 15 --max-time 600 \
+              --output "$file" "$BASE/$file"
+            test -s "$file"
+          done
+          printf '%s  %s\n' "$ASSET_SHA256" "$ASSET" | sha256sum --check -
+          printf '%s  SHA256SUMS\n' "$SUMS_SHA256" | sha256sum --check -
+          grep -E "^$ASSET_SHA256[[:space:]]+\\*?$ASSET$" SHA256SUMS
+          echo 'UPSTREAM_PIN_AND_CHECKSUM=PASS'
+
+      - name: Validate archive and embedded version
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$RUNNER_TEMP"
+          python3 - "$ASSET" "$UPSTREAM_TAG" <<'PY'
+          import json
+          import posixpath
+          import sys
+          import tarfile
+
+          asset, tag = sys.argv[1:]
+          with tarfile.open(asset, "r:gz") as archive:
+              for member in archive:
+                  name = posixpath.normpath(member.name)
+                  if name != "qwen-code" and not name.startswith("qwen-code/"):
+                      raise SystemExit("HOLD_ARCHIVE_PATH")
+                  if member.issym() or member.isln():
+                      if member.issym():
+                          target = posixpath.normpath(posixpath.join(
+                              posixpath.dirname(name), member.linkname
+                          ))
+                      else:
+                          target = posixpath.normpath(member.linkname)
+                      if target != "qwen-code" and not target.startswith("qwen-code/"):
+                          raise SystemExit("HOLD_ARCHIVE_LINK")
+                  if not (member.isfile() or member.isdir() or member.issym() or member.isln()):
+                      raise SystemExit("HOLD_SPECIAL_ARCHIVE_ENTRY")
+              manifest = json.load(archive.extractfile("qwen-code/manifest.json"))
+              assert manifest["version"] == tag.removeprefix("v"), manifest
+              assert manifest["target"] == "linux-x64", manifest
+              for name in ("qwen-code/bin/qwen", "qwen-code/node/bin/node"):
+                  assert archive.getmember(name).isfile(), name
+          print("ARCHIVE_STRUCTURE_AND_VERSION=PASS")
+          PY
+          mkdir -p smoke
+          tar -xzf "$ASSET" -C smoke --no-same-owner
+          smoke/qwen-code/bin/qwen --version
+
+      - name: Write public provenance statement
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$RUNNER_TEMP"
+          {
+            echo "PACKAGE=Qwen Code standalone Linux x64"
+            echo "UPSTREAM_REPOSITORY=https://github.com/QwenLM/qwen-code"
+            echo "UPSTREAM_TAG=$UPSTREAM_TAG"
+            echo "UPSTREAM_ASSET_URL=https://github.com/QwenLM/qwen-code/releases/download/$UPSTREAM_TAG/$ASSET"
+            echo "UPSTREAM_ASSET_SHA256=$ASSET_SHA256"
+            echo "UPSTREAM_SUMS_SHA256=$SUMS_SHA256"
+            echo "MIRROR=UNMODIFIED_PUBLIC_ARTIFACT"
+            echo "DATA_CLASSIFICATION=PUBLIC_SOFTWARE_ONLY"
+            echo "INTERNAL_DATA=NONE"
+          } > SOURCE.txt
+          cat SOURCE.txt
+
+      - name: Publish immutable public release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          cd "$RUNNER_TEMP"
+          if gh release view "$RELAY_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release tag already exists; refusing to overwrite."
+            exit 1
+          fi
+          gh release create "$RELAY_TAG" \
+            "$ASSET" SHA256SUMS SOURCE.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Qwen Code $UPSTREAM_TAG standalone Linux x64 relay" \
+            --notes "Unmodified public Qwen Code standalone archive. Checked against pinned SHA256 of upstream release asset and upstream SHA256SUMS. No internal IIF data."
+          gh release view "$RELAY_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,url,assets \
+            --jq '{tag:.tagName,url:.url,assets:[.assets[]|{name,size,state,digest}]}'
+          echo "RESULT=PASS_QWEN_RELAY_RELEASE"
