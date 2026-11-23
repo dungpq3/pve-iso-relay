@@ -2,6 +2,10 @@ name: Relay Qwen Code standalone v0.28.4
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/relay-qwen-code-standalone.yml
 
 permissions:
   contents: write
@@ -59,7 +63,7 @@ jobs:
                   name = posixpath.normpath(member.name)
                   if name != "qwen-code" and not name.startswith("qwen-code/"):
                       raise SystemExit("HOLD_ARCHIVE_PATH")
-                  if member.issym() or member.isln():
+                  if member.issym() or member.islnk():
                       if member.issym():
                           target = posixpath.normpath(posixpath.join(
                               posixpath.dirname(name), member.linkname
@@ -68,7 +72,7 @@ jobs:
                           target = posixpath.normpath(member.linkname)
                       if target != "qwen-code" and not target.startswith("qwen-code/"):
                           raise SystemExit("HOLD_ARCHIVE_LINK")
-                  if not (member.isfile() or member.isdir() or member.issym() or member.isln()):
+                  if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
                       raise SystemExit("HOLD_SPECIAL_ARCHIVE_ENTRY")
               manifest = json.load(archive.extractfile("qwen-code/manifest.json"))
               assert manifest["version"] == tag.removeprefix("v"), manifest
